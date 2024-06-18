@@ -10,8 +10,14 @@ use std::{
 
 /// What to do with a caught payload
 pub enum PayloadAction {
-    /// Drop the payload and return
-    Drop,
+    /// Drop the payload and return, or abort if it panics on drop
+    DropOrAbort,
+
+    /// Drop the payload and return, or forget the new payload if it panics on drop
+    DropOrForget,
+
+    /// Drop the payload and return, without guarding against panic on drop
+    DropOrUnwind,
 
     /// Resume unwinding
     ResumeUnwind,
@@ -55,67 +61,37 @@ pub fn catch_unwind_or_forget<F: FnOnce() -> R + UnwindSafe, R>(f: F) -> Option<
 
 /// Invoke the provided closure and catch any unwinding panics that may occur.
 /// You can inspect the payload before it's dropped with the `inspect` closure, and
-/// optionally choose to resume unwinding instead.
+/// choose what to do with it using [`PayloadAction`].
 ///
-/// If the panic payload panics when dropped, or if `inspect` panics, abort the process.
+/// If `inspect` panics, abort the process.
 ///
-/// Returns `Some` if no panics were caught and `None` otherwise.
-///
-/// See [`std::panic::catch_unwind`] for more information.
-#[inline]
-#[must_use]
-pub fn catch_unwind_with_or_abort<
-    F: FnOnce() -> R + UnwindSafe,
-    R,
-    I: FnOnce(&(dyn Any + Send + 'static)) -> PayloadAction + UnwindSafe,
->(
-    f: F,
-    inspect: I,
-) -> Option<R> {
-    catch_unwind_with_or_else(f, inspect, drop_or_abort)
-}
-
-/// Invoke the provided closure and catch any unwinding panics that may occur.
-/// You can inspect the payload before it's dropped with the `inspect` closure, and
-/// optionally choose to resume unwinding instead.
-///
-/// If the panic payload panics when dropped, `mem::forget` the new panic payload and return `None`.
-/// If `inspect` panics, the process will abort.
-///
-/// Returns `Some` if no panics were caught and `None` otherwise.
+/// Returns `Some` if no panics were caught or `None` if panics were caught and dropped.
 ///
 /// See [`std::panic::catch_unwind`] for more information.
 #[inline]
 #[must_use]
-pub fn catch_unwind_with_or_forget<
+pub fn catch_unwind_with<
     F: FnOnce() -> R + UnwindSafe,
     R,
     I: FnOnce(&(dyn Any + Send + 'static)) -> PayloadAction + UnwindSafe,
 >(
     f: F,
     inspect: I,
-) -> Option<R> {
-    catch_unwind_with_or_else(f, inspect, drop_or_forget)
-}
-
-#[inline]
-#[must_use]
-fn catch_unwind_with_or_else<
-    F: FnOnce() -> R + UnwindSafe,
-    R,
-    I: FnOnce(&(dyn Any + Send + 'static)) -> PayloadAction + UnwindSafe,
-    D: FnOnce(Box<dyn Any + Send + 'static>),
->(
-    f: F,
-    inspect: I,
-    do_drop: D,
 ) -> Option<R> {
     match catch_unwind(f) {
         Ok(ok) => Some(ok),
         Err(err) => match catch_unwind(AssertUnwindSafe(|| inspect(&err))) {
             Ok(PayloadAction::ResumeUnwind) => resume_unwind(err),
-            Ok(PayloadAction::Drop) => {
-                do_drop(err);
+            Ok(PayloadAction::DropOrAbort) => {
+                drop_or_abort(err);
+                None
+            }
+            Ok(PayloadAction::DropOrForget) => {
+                drop_or_forget(err);
+                None
+            }
+            Ok(PayloadAction::DropOrUnwind) => {
+                mem::drop(err);
                 None
             }
             Err(_err2) => {
@@ -171,16 +147,16 @@ mod tests {
     }
 
     #[test]
-    fn test_catch_unwind_with_or_forget() {
+    fn test_catch_unwind_with() {
         let mut count = 0;
         let count_ref = AssertUnwindSafe(&mut count);
         assert_eq!(
-            catch_unwind_with_or_forget(
+            catch_unwind_with(
                 || "success",
                 move |_| {
                     let c = count_ref;
                     *c.0 += 1;
-                    PayloadAction::Drop
+                    PayloadAction::DropOrForget
                 }
             ),
             Some("success")
@@ -189,18 +165,16 @@ mod tests {
 
         let count_ref = AssertUnwindSafe(&mut count);
         assert_eq!(
-            catch_unwind_with_or_forget(endless_panic, move |_| {
+            catch_unwind_with(endless_panic, move |_| {
                 let c = count_ref;
                 *c.0 += 1;
-                PayloadAction::Drop
+                PayloadAction::DropOrForget
             }),
             None
         );
         assert_eq!(count, 1);
 
-        match catch_unwind(|| {
-            catch_unwind_with_or_abort(endless_panic, |_| PayloadAction::ResumeUnwind)
-        }) {
+        match catch_unwind(|| catch_unwind_with(endless_panic, |_| PayloadAction::ResumeUnwind)) {
             Ok(_) => panic!("Caught::ResumeUnwind didn't resume"),
             Err(err) => mem::forget(err),
         }

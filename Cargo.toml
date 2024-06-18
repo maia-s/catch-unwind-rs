@@ -1,0 +1,13 @@
+[package]
+name = "catch-unwind"
+version = "0.1.0"
+edition = "2021"
+authors = ["Maia S. R."]
+license = "Zlib OR MIT OR Apache-2.0"
+description = "Wrappers for catch_unwind that handle the edge case of the caught panic payload panicing"
+repository = "https://github.com/maia-s/catch-unwind-rs"
+documentation = "https://docs.rs/catch-unwind"
+keywords = ["catch", "unwind", "panic"]
+categories = ["development-tools", "rust-patterns"]
+
+[dependencies]
